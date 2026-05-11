@@ -1,4 +1,5 @@
 import streamlit as st
+import numpy as np
 
 # --- ロジック部分 ---
 def calculate_expressiveness_score(intonation_raw, technique_raw):
@@ -27,15 +28,12 @@ def calculate_expressiveness_score(intonation_raw, technique_raw):
     q11, q12, q21, q22 = score_grid[idx_i][idx_t], score_grid[idx_i][idx_t+1], score_grid[idx_i+1][idx_t], score_grid[idx_i+1][idx_t+1]
     return (1-intonation_ratio)*(1-technique_ratio)*q11 + intonation_ratio*(1-technique_ratio)*q21 + (1-intonation_ratio)*technique_ratio*q12 + intonation_ratio*technique_ratio*q22
 
-def get_jh_count_from_bonus(target_bonus, accent_count):
+def interpolate_jh_bonus(jh_count, accent_count):
     """
-    画像の表に基づき、ボーナス値とアクセント数からJH数を逆算する。
-    縦軸(JH): 0, 10, 20, 30, 40, 50
-    横軸(ACC): 0, 10, 20, 30, 40, 50
+    画像のJHボーナス表に基づき、2次元線形補間でボーナス値を算出する。
     """
-    jh_axis = [0, 10, 20, 30, 40, 50]
-    acc_axis = [0, 10, 20, 30, 40, 50]
-    # 表の内容
+    jh_axis = [0.0, 10.0, 20.0, 30.0, 40.0, 50.0]
+    acc_axis = [0.0, 10.0, 20.0, 30.0, 40.0, 50.0]
     bonus_table = [
         [0,  0,  0, 0, 0, 0], # JH 0
         [10, 5,  0, 0, 0, 0], # JH 10
@@ -44,15 +42,27 @@ def get_jh_count_from_bonus(target_bonus, accent_count):
         [40, 25, 9, 5, 3, 2], # JH 40
         [50, 30, 10, 5, 3, 2] # JH 50
     ]
+
+    # 範囲外をクリップ
+    jh_val = max(0.0, min(50.0, float(jh_count)))
+    acc_val = max(0.0, min(50.0, float(accent_count)))
+
+    # インデックス検索
+    def get_idx(val, axis):
+        for i in range(len(axis)-1):
+            if axis[i] <= val <= axis[i+1]: return i
+        return len(axis)-2
+
+    i, j = get_idx(jh_val, jh_axis), get_idx(acc_val, acc_axis)
     
-    # 最近似のACCインデックスを探す
-    acc_idx = min(range(len(acc_axis)), key=lambda i: abs(acc_axis[i] - accent_count))
+    # 割合
+    r_jh = (jh_val - jh_axis[i]) / (jh_axis[i+1] - jh_axis[i])
+    r_acc = (acc_val - acc_axis[j]) / (acc_axis[j+1] - acc_axis[j])
+
+    # 4点補間
+    b11, b12, b21, b22 = bonus_table[i][j], bonus_table[i][j+1], bonus_table[i+1][j], bonus_table[i+1][j+1]
     
-    possible_jhs = []
-    for i, jh_val in enumerate(jh_axis):
-        if bonus_table[i][acc_idx] == target_bonus:
-            possible_jhs.append(jh_val)
-    return possible_jhs
+    return (1-r_jh)*(1-r_acc)*b11 + r_jh*(1-r_acc)*b21 + (1-r_jh)*r_acc*b12 + r_jh*r_acc*b22
 
 def solve_possible_bonus_range(display_intonation, display_expressiveness, base_technique_points):
     """境界条件に基づき、合計技法点の範囲からボーナス範囲を類推する。"""
@@ -97,7 +107,7 @@ if analysis_mode == "【予測】みかけの数値から推定する":
     
     col_base, col_acc = st.columns(2)
     with col_base: input_base_t = st.number_input("基礎技法点 (0-1250)", 0, 1250, 800)
-    with col_acc: input_acc = st.number_input("アクセント数 (0-50)", 0, 50, 0, step=10)
+    with col_acc: input_acc = st.number_input("アクセント数 (実数値可)", 0.0, 50.0, 0.0)
 
     if st.button("範囲を類推する", type="primary", use_container_width=True):
         bonus_results = solve_possible_bonus_range(input_disp_i, input_disp_s, input_base_t)
@@ -105,23 +115,25 @@ if analysis_mode == "【予測】みかけの数値から推定する":
             b_min, b_max = min(bonus_results), max(bonus_results)
             st.success("解析完了")
             
-            # ボーナス結果表示
-            if b_min == b_max:
-                st.metric("確定ボーナス値", f"{b_min} 点")
-            else:
-                st.subheader(f"ボーナス推定範囲: {b_min} ～ {b_max} 点")
+            if b_min == b_max: st.metric("確定ボーナス値", f"{b_min} 点")
+            else: st.subheader(f"ボーナス推定範囲: {b_min} ～ {b_max} 点")
             
-            # JH数の類推オプション
-            st.info(f"💡 アクセント数 {input_acc} の時のJH数類推")
-            all_possible_jhs = []
-            for b in bonus_results:
-                all_possible_jhs.extend(get_jh_count_from_bonus(b, input_acc))
+            # JH数の補間逆算
+            st.info(f"💡 アクセント数 {input_acc} の時のJH数類推 (線形補間)")
+            jh_results = []
+            # JH 0.0から50.0まで0.1刻みで探索
+            for test_jh in np.arange(0.0, 50.1, 0.1):
+                calc_b = interpolate_jh_bonus(test_jh, input_acc)
+                # 推定されたボーナス範囲のいずれかと一致（誤差許容）するか確認
+                if any(abs(calc_b - b) < 0.2 for b in bonus_results):
+                    jh_results.append(round(test_jh, 1))
             
-            unique_jhs = sorted(list(set(all_possible_jhs)))
-            if unique_jhs:
-                st.write(f"該当する可能性のあるJH数: **{', '.join(map(str, unique_jhs))}**")
+            if jh_results:
+                jh_min, jh_max = min(jh_results), max(jh_results)
+                if jh_min == jh_max: st.write(f"該当するJH数: **{jh_min}**")
+                else: st.write(f"該当するJH数範囲: **{jh_min} ～ {jh_max}**")
             else:
-                st.write("表のデータ範囲内に該当するJH数はありませんでした。")
+                st.write("表のデータ範囲内に該当するJH数は見つかりませんでした。")
         else:
             st.error("条件に合うボーナスが見つかりませんでした。")
 
@@ -133,7 +145,7 @@ else:
     
     col_rb, col_ra = st.columns(2)
     with col_rb: input_base_t_precise = st.number_input("基礎技法点 (0-1250)", 0, 1250, 800)
-    with col_ra: input_acc_precise = st.number_input("アクセント数 (0-50)", 0, 50, 0, step=10)
+    with col_ra: input_acc_precise = st.number_input("アクセント数 (実数値可)", 0.0, 50.0, 0.0)
 
     if st.button("ボーナスを特定", type="primary", use_container_width=True):
         best_t, min_diff = 0, float('inf')
@@ -147,12 +159,14 @@ else:
             st.success("解析完了")
             st.metric("ジャストヒットボーナス", f"{bonus} 点")
             
-            # JH数の逆算
-            jhs = get_jh_count_from_bonus(bonus, input_acc_precise)
-            if jhs:
-                st.write(f"類推されるJH数: **{', '.join(map(str, jhs))}**")
-            else:
-                st.caption("※表のデータ範囲外のためJH数は類推できませんでした。")
+            # 補間によるJH数の特定（全探索）
+            jh_candidates = []
+            for test_jh in np.arange(0.0, 50.1, 0.1):
+                if abs(interpolate_jh_bonus(test_jh, input_acc_precise) - bonus) < 0.2:
+                    jh_candidates.append(round(test_jh, 1))
+            
+            if jh_candidates:
+                st.write(f"推定されるJH数: **{min(jh_candidates)} ～ {max(jh_candidates)}**")
 
 st.divider()
 st.caption("© 2026 Zawasow_lab")
