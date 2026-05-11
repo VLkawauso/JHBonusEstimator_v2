@@ -30,34 +30,39 @@ def calculate_expressiveness_score(intonation_raw, technique_raw):
 
 def interpolate_jh_bonus(jh_count, accent_count):
     """
-    画像のJHボーナス表に基づき、2次元線形補間でボーナス値を算出する。
-    accent_countは整数だが、表の格子点(10刻み)の間にある場合は補間する。
+    画像のJHボーナス表に基づき、2次元線形補間を行う。
+    ※表の値は10倍してボーナス実数値として扱う。
     """
     jh_axis = [0.0, 10.0, 20.0, 30.0, 40.0, 50.0]
     acc_axis = [0.0, 10.0, 20.0, 30.0, 40.0, 50.0]
+    # 表の値を10倍した実測値テーブル
     bonus_table = [
-        [0,  0,  0, 0, 0, 0], # JH 0
-        [10, 5,  0, 0, 0, 0], # JH 10
-        [20, 10, 5, 3, 2, 1], # JH 20
-        [30, 20, 8, 4, 3, 2], # JH 30
-        [40, 25, 9, 5, 3, 2], # JH 40
-        [50, 30, 10, 5, 3, 2] # JH 50
+        [0,  0,  0, 0, 0, 0], 
+        [100, 50,  0, 0, 0, 0], 
+        [200, 100, 50, 30, 20, 10], 
+        [300, 200, 80, 40, 30, 20], 
+        [400, 250, 90, 50, 30, 20], 
+        [500, 300, 100, 50, 30, 20]
     ]
 
-    # 範囲外をクリップ
-    jh_val = max(0.0, min(50.0, float(jh_count)))
     acc_val = max(0.0, min(50.0, float(accent_count)))
+    
+    # JH数が50を超える場合の外挿
+    if jh_count > 50.0:
+        b40 = interpolate_jh_bonus(40.0, acc_val)
+        b50 = interpolate_jh_bonus(50.0, acc_val)
+        slope = (b50 - b40)
+        return b50 + slope * ((jh_count - 50.0) / 10.0)
 
+    jh_val = max(0.0, float(jh_count))
     def get_idx(val, axis):
         for i in range(len(axis)-1):
             if axis[i] <= val <= axis[i+1]: return i
         return len(axis)-2
 
     i, j = get_idx(jh_val, jh_axis), get_idx(acc_val, acc_axis)
-    
     r_jh = (jh_val - jh_axis[i]) / (jh_axis[i+1] - jh_axis[i])
     r_acc = (acc_val - acc_axis[j]) / (acc_axis[j+1] - acc_axis[j])
-
     b11, b12, b21, b22 = bonus_table[i][j], bonus_table[i][j+1], bonus_table[i+1][j], bonus_table[i+1][j+1]
     
     return (1-r_jh)*(1-r_acc)*b11 + r_jh*(1-r_acc)*b21 + (1-r_jh)*r_acc*b12 + r_jh*r_acc*b22
@@ -100,12 +105,11 @@ st.divider()
 if analysis_mode == "【予測】みかけの数値から推定する":
     st.subheader("🔍 みかけ数値推定モード")
     col_i, col_s = st.columns(2)
-    with col_i: input_disp_i = st.number_input("みかけの抑揚 (0-100)", 0, 100, 99)
-    with col_s: input_disp_s = st.number_input("みかけの表現力 (0-100)", 0, 100, 99)
+    with col_i: input_disp_i = st.number_input("みかけの抑揚 (0-100)", 0, 100, 100)
+    with col_s: input_disp_s = st.number_input("みかけの表現力 (0-100)", 0, 100, 100)
     
     col_base, col_acc = st.columns(2)
-    with col_base: input_base_t = st.number_input("基礎技法点 (0-1250)", 0, 1250, 800)
-    # アクセント数を整数に制限
+    with col_base: input_base_t = st.number_input("基礎技法点 (0-1250)", 0, 1250, 1050)
     with col_acc: input_acc = st.number_input("アクセント数 (0以上の整数)", min_value=0, value=0, step=1)
 
     if st.button("範囲を類推する", type="primary", use_container_width=True):
@@ -119,10 +123,10 @@ if analysis_mode == "【予測】みかけの数値から推定する":
             
             st.info(f"💡 アクセント数 {input_acc} の時のJH数類推")
             jh_results = []
-            # JH数は小数での補間を許容
-            for test_jh in np.arange(0.0, 50.1, 0.1):
+            # 探索範囲を 0.0 ～ 200.0 程度に拡大
+            for test_jh in np.arange(0.0, 200.1, 0.1):
                 calc_b = interpolate_jh_bonus(test_jh, input_acc)
-                if any(abs(calc_b - b) < 0.2 for b in bonus_results):
+                if any(abs(calc_b - b) < 0.5 for b in bonus_results):
                     jh_results.append(round(test_jh, 1))
             
             if jh_results:
@@ -130,19 +134,19 @@ if analysis_mode == "【予測】みかけの数値から推定する":
                 if jh_min == jh_max: st.write(f"該当するJH数: **{jh_min}**")
                 else: st.write(f"該当するJH数範囲: **{jh_min} ～ {jh_max}**")
             else:
-                st.write("表のデータ範囲内に該当するJH数は見つかりませんでした。")
+                st.write("該当するJH数は見つかりませんでした。")
         else:
             st.error("条件に合うボーナスが見つかりませんでした。")
 
 else:
+    # 詳細解析モードも同様に修正（中略）
     st.subheader("📋 詳細リザルト解析モード")
     col_ri, col_rs = st.columns(2)
-    with col_ri: input_real_i = st.number_input("実際の抑揚 (0-1000)", 0, 1000, 990)
-    with col_rs: input_real_s = st.number_input("実際の表現力 (0-100000)", 0, 100000, 99750)
+    with col_ri: input_real_i = st.number_input("実際の抑揚 (0-1000)", 0, 1000, 1000)
+    with col_rs: input_real_s = st.number_input("実際の表現力 (0-100000)", 0, 100000, 100000)
     
     col_rb, col_ra = st.columns(2)
-    with col_rb: input_base_t_precise = st.number_input("基礎技法点 (0-1250)", 0, 1250, 800)
-    # アクセント数を整数に制限
+    with col_rb: input_base_t_precise = st.number_input("基礎技法点 (0-1250)", 0, 1250, 1050)
     with col_ra: input_acc_precise = st.number_input("アクセント数 (0以上の整数)", min_value=0, value=0, step=1)
 
     if st.button("ボーナスを特定", type="primary", use_container_width=True):
@@ -156,12 +160,10 @@ else:
         else:
             st.success("解析完了")
             st.metric("ジャストヒットボーナス", f"{bonus} 点")
-            
             jh_candidates = []
-            for test_jh in np.arange(0.0, 50.1, 0.1):
-                if abs(interpolate_jh_bonus(test_jh, input_acc_precise) - bonus) < 0.2:
+            for test_jh in np.arange(0.0, 200.1, 0.1):
+                if abs(interpolate_jh_bonus(test_jh, input_acc_precise) - bonus) < 0.5:
                     jh_candidates.append(round(test_jh, 1))
-            
             if jh_candidates:
                 st.write(f"推定されるJH数: **{min(jh_candidates)} ～ {max(jh_candidates)}**")
 
